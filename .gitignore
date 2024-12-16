@@ -1,3 +1,5 @@
 *.pt
 /data/*
 .python-version
+training.py
+*.pyc
