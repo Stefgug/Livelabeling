@@ -1,8 +1,7 @@
 from ultralytics import YOLO
-from dataclasses import dataclass
 from typing import List, Dict, Tuple, Type
 
-@dataclass
+
 class DetectionResult:
     bbox: Tuple[int, int, int, int]
     class_id: int

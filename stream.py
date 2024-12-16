@@ -1,7 +1,6 @@
 import yt_dlp
 import cv2
 import numpy as np
-from dataclasses import dataclass
 from typing import Dict, List
 import time
 from yolo import YOLOProcessor, DetectionResult
