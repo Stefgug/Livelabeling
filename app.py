@@ -2,53 +2,61 @@ import streamlit as st
 import cv2
 import yt_dlp
 from ultralytics import YOLO
-import time
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+import av
+import threading
 
-st.title("Live Youtube Object Detection")
+st.title("YOLOv11 object detection on live YouTube video")
 
-def get_youtube_url(url):
-    """Extract the direct video URL from YouTube link"""
-    with yt_dlp.YoutubeDL({'format': 'best'}) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return info['url']
+# Classes we're interested in
+classes = {0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
 
-def main():
-    st.title("Live Youtube Object Detection")
+class VideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.youtube_url = None
+        self.cap = None
+        self.lock = threading.Lock()
+        self.model = None
 
-    # Input for YouTube URL
-    youtube_url = st.text_input("YouTube URL", "https://www.youtube.com/watch?v=rnXIjl_Rzy4")
+    def _ensure_model(self):
+        if self.model is None:
+            try:
+                self.model = YOLO('yolo11n.pt', verbose=False)
+            except Exception as e:
+                st.error(f"Error loading YOLO model: {str(e)}")
+                return False
+        return True
 
-    if not youtube_url:
-        st.warning("Please enter a YouTube URL")
-        return
+    def update_url(self, url):
+        try:
+            with self.lock:
+                if self.cap is not None:
+                    self.cap.release()
+                ydl_opts = {'format': 'best'}
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    video_url = info['url']
+                    self.cap = cv2.VideoCapture(video_url)
+                return True
+        except Exception as e:
+            st.error(f"Error updating URL: {str(e)}")
+            return False
 
-    # Load YOLO model
-    model = YOLO('yolov11n.pt')  # using smaller model for better performance
+    def recv(self, frame):
+        if not self._ensure_model():
+            return frame
 
-    # Classes we're interested in
-    classes = {0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+        img = frame.to_ndarray(format="bgr24")
 
-    # Setup video capture
-    video_url = get_youtube_url(youtube_url)
-    cap = cv2.VideoCapture(video_url)
-
-    # Create placeholder for video feed
-    frame_placeholder = st.empty()
-
-    # Metrics
-    fps_placeholder = st.empty()
-    last_time = time.time()
-    frame_count = 0
-
-    try:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                st.error("Can't receive frame from stream")
-                break
+        try:
+            with self.lock:
+                if self.cap and self.cap.isOpened():
+                    ret, youtube_frame = self.cap.read()
+                    if ret:
+                        img = youtube_frame
 
             # Run detection
-            results = model.predict(frame, classes=list(classes.keys()))[0]
+            results = self.model.predict(img, classes=list(classes.keys()), verbose=False)[0]
 
             # Draw detections
             for box in results.boxes:
@@ -58,26 +66,41 @@ def main():
 
                 if class_id in classes:
                     label = f"{classes[class_id]} {conf:.2f}"
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(frame, label, (x1, y1 - 10),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(img, label, (x1, y1 - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
-            # Convert BGR to RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            st.error(f"Error processing frame: {str(e)}")
 
-            # Display frame
-            frame_placeholder.image(frame)
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-            # Update FPS
-            frame_count += 1
-            if time.time() - last_time >= 1.0:
-                fps = frame_count / (time.time() - last_time)
-                fps_placeholder.text(f"FPS: {fps:.1f}")
-                frame_count = 0
-                last_time = time.time()
+    def __del__(self):
+        if self.cap:
+            self.cap.release()
 
-    finally:
-        cap.release()
+# Initialize session state
+if 'processor' not in st.session_state:
+    st.session_state.processor = VideoProcessor()
 
-if __name__ == "__main__":
-    main()
+# Input for YouTube URL
+youtube_url = st.text_input("YouTube URL", "https://www.youtube.com/watch?v=rnXIjl_Rzy4")
+
+st.session_state.processor.update_url(youtube_url)
+
+try:
+    webrtc_streamer(
+        key="example",
+        video_processor_factory=lambda: st.session_state.processor,
+        rtc_configuration={
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+        },
+        media_stream_constraints={"video": True, "audio": False},
+        video_html_attrs={
+            "autoPlay": True,
+            "controls": False,
+            "muted": True
+        },
+    )
+except Exception as e:
+    st.error(f"Error initializing WebRTC stream: {str(e)}")

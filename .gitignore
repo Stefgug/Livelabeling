@@ -3,3 +3,4 @@
 .python-version
 training.py
 *.pyc
+*.pem
